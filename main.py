@@ -16,12 +16,8 @@ CSP_BYPASSES = {
         "data:",
         "https:",
         "*",
-        "example.com", # add potential vulnerable domains
-        "//example.com",
-        "https://example.com"
     ],
     "object-src": [
-        "'none'", # can lead to issues in older browsers
         "data:",
         "*",
     ],
@@ -40,16 +36,15 @@ CSP_BYPASSES = {
     ],
     "frame-ancestors": [
         "*",
-        "none",
     ]
 }
 
-# Define directives that are often missing
+# Define directives that are often missing. Directives with their own
+# specific missing checks above (frame-ancestors, object-src, base-uri,
+# script-src, default-src) are not repeated here, so each missing
+# directive is reported exactly once.
 MISSING_DIRECTIVES = [
-    "frame-ancestors",
-    "object-src",
-    "base-uri",
-    "require-sri-for script style",
+    "require-sri-for",
     "upgrade-insecure-requests",
 ]
 
@@ -76,13 +71,14 @@ def fetch_csp_header(url):
         str: The CSP header value, or None if not found.
     """
     try:
+        # No raise_for_status: a CSP header on an error response is analyzed too.
         response = requests.get(url, allow_redirects=True, timeout=10)
-        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-        return response.headers.get("Content-Security-Policy") or response.headers.get("X-Content-Security-Policy") or response.headers.get("Content-Security-Policy-Report-Only")
+        header = response.headers.get("Content-Security-Policy") or response.headers.get("X-Content-Security-Policy") or response.headers.get("Content-Security-Policy-Report-Only")
+        return header, response.url, response.status_code
 
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching URL: {e}")
-        return None
+        return None, None, None
 
 def analyze_csp(csp_header):
     """
@@ -111,12 +107,17 @@ def analyze_csp(csp_header):
         
         directives[directive_name] = directive_value.split(' ') # Store values in list format
     
+    # A missing fetch directive falls back to default-src when one is set;
+    # only claim the gap when there is no fallback to govern it. Any weak
+    # default-src values are flagged by the default-src check itself.
+    has_default = "default-src" in directives
+
     # Check for common bypasses in script-src
     if "script-src" in directives:
         for bypass in CSP_BYPASSES["script_src"]:
             if bypass in directives["script-src"]:
                 findings.append(f"script-src allows {bypass}. This is a potential bypass.")
-    else:
+    elif not has_default:
         findings.append("script-src is missing, potentially allowing arbitrary script execution.")
 
     # Check for common bypasses in object-src
@@ -124,7 +125,7 @@ def analyze_csp(csp_header):
         for bypass in CSP_BYPASSES["object-src"]:
             if bypass in directives["object-src"]:
                 findings.append(f"object-src allows {bypass}. This is a potential bypass.")
-    else:
+    elif not has_default:
         findings.append("object-src is missing, potentially allowing arbitrary object execution.")
 
     # Check for common bypasses in base-uri
@@ -132,9 +133,9 @@ def analyze_csp(csp_header):
         for bypass in CSP_BYPASSES["base-uri"]:
             if bypass in directives["base-uri"]:
                 findings.append(f"base-uri allows {bypass}. This may lead to XSS or other issues.")
-    else:
+    elif not has_default:
         findings.append("base-uri is missing, which may lead to XSS.")
-    
+
     if "default-src" in directives:
         for bypass in CSP_BYPASSES["default-src"]:
             if bypass in directives["default-src"]:
@@ -144,10 +145,8 @@ def analyze_csp(csp_header):
 
     if "frame-ancestors" in directives:
         for bypass in CSP_BYPASSES["frame-ancestors"]:
-            if bypass == '*':
+            if bypass in directives["frame-ancestors"]:
               findings.append(f"frame-ancestors allows {bypass}. Clickjacking can be performed.")
-            if bypass == 'none':
-              findings.append(f"frame-ancestors allows {bypass}. No framing is allowed.")
     else:
         findings.append("frame-ancestors is missing, clickjacking can be performed.")
     
@@ -192,7 +191,14 @@ def main():
         logging.error("Invalid URL. Please provide a valid URL (e.g., https://example.com).")
         sys.exit(1)
 
-    csp_header = fetch_csp_header(url)
+    csp_header, effective_url, status_code = fetch_csp_header(url)
+
+    if effective_url is None:
+        logging.error("The target could not be reached. Scan not performed; no verdict is available.")
+        sys.exit(1)
+
+    print(f"Effective URL: {effective_url}")
+    print(f"Response status: {status_code}")
 
     if csp_header:
         logging.info(f"CSP Header: {csp_header}")

@@ -73,6 +73,11 @@ def fetch_csp_header(url):
     try:
         # No raise_for_status: a CSP header on an error response is analyzed too.
         response = requests.get(url, allow_redirects=True, timeout=10)
+        # The or chain sets the precedence: an enforcing header wins, the
+        # old X- prefixed name is next, and a report only policy is read
+        # only when nothing enforcing exists. When report only is all a
+        # site sends, I analyze it as the policy, even though browsers do
+        # not enforce it. That gap is worth knowing about, not hiding.
         header = response.headers.get("Content-Security-Policy") or response.headers.get("X-Content-Security-Policy") or response.headers.get("Content-Security-Policy-Report-Only")
         return header, response.url, response.status_code
 
@@ -105,6 +110,9 @@ def analyze_csp(csp_header):
         directive_name = parts[0].strip()
         directive_value = parts[1].strip() if len(parts) > 1 else ""
         
+        # A repeated directive overwrites the earlier one in this dict.
+        # Browsers take the first occurrence instead, so a duplicated
+        # directive can make my reading differ from the enforced policy.
         directives[directive_name] = directive_value.split(' ') # Store values in list format
     
     # A missing fetch directive falls back to default-src when one is set;
@@ -143,6 +151,9 @@ def analyze_csp(csp_header):
     else:
         findings.append("default-src is missing, which can lead to vulnerabilities.")
 
+    # frame-ancestors gets no default-src fallback treatment above or
+    # here, on purpose: browsers do not fall back to default-src for it,
+    # so a missing frame-ancestors really is a missing control.
     if "frame-ancestors" in directives:
         for bypass in CSP_BYPASSES["frame-ancestors"]:
             if bypass in directives["frame-ancestors"]:

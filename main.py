@@ -106,14 +106,18 @@ def analyze_csp(csp_header):
         if not directive:
             continue # skip empty directives.
         
-        parts = directive.split(' ', 1) # Split on first space to separate directive and values.
-        directive_name = parts[0].strip()
-        directive_value = parts[1].strip() if len(parts) > 1 else ""
-        
-        # A repeated directive overwrites the earlier one in this dict.
-        # Browsers take the first occurrence instead, so a duplicated
-        # directive can make my reading differ from the enforced policy.
-        directives[directive_name] = directive_value.split(' ') # Store values in list format
+        # split() with no argument splits on any run of whitespace
+        # (spaces or tabs), so a tab separated directive is parsed the
+        # same way a browser parses it.
+        parts = directive.split()
+        if not parts:
+            continue
+        directive_name = parts[0]
+        # Browsers take the first occurrence of a repeated directive and
+        # ignore later ones, so keep the first value seen here too.
+        if directive_name in directives:
+            continue
+        directives[directive_name] = parts[1:]
     
     # A missing fetch directive falls back to default-src when one is set;
     # only claim the gap when there is no fallback to govern it. Any weak
